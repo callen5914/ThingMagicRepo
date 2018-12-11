@@ -2,17 +2,23 @@
 #include <PublishManager.h>
 #include <vector>
 
+#define MAX_MESSAGE_LENGTH 32
+#define THRESHOLD 5            // Min seconds to prevent double detection
+#define PUSH_BUTTON_PIN  9     // push button connection (0 = disabled)
+#define START_LED_PIN    8     // led to show that starttime has been recorded (0 = disabled)
+
+///////////////////////////////////////////////////////////////
+/// no configuration changes needed beyond this point       ///
+///////////////////////////////////////////////////////////////
+
 // some compilers expect the routines to be declared before encountering in the code
-// not sure this is necessary with particle compiler if not comment or remove
+// not sure this is necessary with Particle compiler. if not comment or remove
 void PublishRunnerStats (int i);
 void add_new_runner(char * crossingRunner, uint32_t crossingTime, uint16_t rnd, bool pub);
 bool checkForNewRunner(const char endMarker);
 void disp_runner_stat();
 void check_cmd();
 void handle_cmd(char *cmd);
-
-#define MAX_MESSAGE_LENGTH 32
-#define THRESHOLD 5            // Min seconds to prevent double detection
 
 struct Runner {
     char runnerTag[32];         // save EPC
@@ -28,16 +34,12 @@ PublishManager<> publishManager;
 char incomingMessage[MAX_MESSAGE_LENGTH];
 bool enablePUB = true;          // if false NO publishing is performed
 
-// DO WE NEED THESE DEFINITIONS ??
-constexpr uint16_t CROSSING_HYSTERESIS_SECONDS = 3; //?????????????????
-const unsigned long interval = 8000;        //?????? what does this do ????
-
-
 /* handle commands example
  *
  * #CLEAR!# : clear the list completely (EXTRA !)
  * #STOP#   : stop publishing
  * #START#  : start publishing
+ * #RDY#    : it will clear runner statistics, wait for button to be pressed, set the start time for all runners and enable publishing
  * #DSP#    : display runner statistics
  * #ADD#    : add a new runner entry (removes if runner existed first)
  * #REMOVE# : remove a runner entry
@@ -49,7 +51,7 @@ const unsigned long interval = 8000;        //?????? what does this do ????
 void handle_cmd(char *cmd)
 {
     char *p;
-    char buf[32];
+    char buf[MAX_MESSAGE_LENGTH];
 
     // empty runner list
     if (strcmp(cmd, "#CLEAR!#") == 0) {
@@ -60,12 +62,34 @@ void handle_cmd(char *cmd)
     else if (strcmp(cmd, "#STOP#") == 0) {
         enablePUB = false;
         Serial.printf("Publishing has been stopped\n");
+        if (START_LED_PIN > 0) digitalWrite(START_LED_PIN, LOW);
     }
     // enable publish
     else if (strcmp(cmd, "#START#") == 0) {
         enablePUB = true;
         Serial.printf("Publishing has been enabled\n");
     }
+
+    // It will reset/clear all runner statistics,
+    // wait for button to be pressed,
+    // set the start time for all runners,
+    // set the start LED and enable publishing
+    else if (strcmp(cmd, "#RDY#") == 0)
+    {
+        handle_cmd("#RESETALL!#");
+
+        if (PUSH_BUTTON_PIN > 0)
+            while(digitalRead(PUSH_BUTTON_PIN) == HIGH); // wait for button pressed
+
+        // set runners start time
+        uint32_t StartTime = Time.now();
+        for (size_t i = 0; i < runners.size(); i++)  runners[i].ts = StartTime;
+
+        enablePUB = true;
+        Serial.printf("Started\n");
+        if (START_LED_PIN > 0) digitalWrite(START_LED_PIN, HIGH);
+    }
+
     // display runner statistics
     else if (strcmp(cmd, "#DSP#") == 0)   disp_runner_stat();
 
@@ -194,8 +218,21 @@ void check_cmd()
 void setup() {
     Serial.begin(9600);  //<<<<< don't forget!
     Serial1.begin(115200);
-}
 
+    if (PUSH_BUTTON_PIN > 0)
+    {
+        // connect a pushbutton between the pin and ground
+        pinMode(PUSH_BUTTON_PIN,INPUT, INPUT_PULLUP);
+    }
+
+    if (START_LED_PIN > 0)
+    {
+        // connect a led between the pin, 4k7 resistor and ground
+        pinMode(START_LED_PIN,OUTPUT);
+        digitalWrite(START_LED_PIN, LOW);
+    }
+
+}
 
 void loop() {
     publishManager.process();
@@ -225,16 +262,16 @@ void loop() {
 
                     Serial.printf("finishing round %d "), runners[i].round;
 
-                    // in case the runner was initialized before with a command and the first round
-                    // just ended, then there was no previous time was recorded so we do not know round time.
+                    // in case the runner was initialized before with a command and NOT started with #RDY# command
+                    // the first round just ended, then there was no previous time was recorded so we do not know round time.
                     if (runners[i].ts != 0)
                         Serial.printf("in %d seconds. "), crossingTime - runners[i].ts);
 
                     // if no fastest lap recorded yet
                     if (runners[i].fastest_ts == 0)
                     {
-                         // in case the runner was initialized before with a command and the first round
-                         // just ended, then there was no previous time was recorded before so we do not
+                         // in case the runner was initialized before with a command and NOT started with #RDY# command
+                         // the first round just ended, then there was no previous time was recorded before so we do not
                          // know round time, else this was the second round.
                          if (runners[i].ts != 0) runners[i].fastest_ts = crossingTime - runners[i].ts;
                          Serial.printf(".\n");
